@@ -14,7 +14,7 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = 15
-        versionName = "2.5.1"
+        versionName = "2.5.1-matchday"
     }
 
     // Release key lives outside the repo; keystore.properties (git-ignored) points at it. Without that file

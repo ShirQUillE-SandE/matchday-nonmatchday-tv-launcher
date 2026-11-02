@@ -128,7 +128,10 @@ class KeepHome : JobService() {
 class Booted : BroadcastReceiver() {
     override fun onReceive(c: Context, i: Intent) {
         val pending = goAsync()
+        DreamOverlay.install(c) // the music card over the screensaver, from the first screensaver after boot
         HomeOverride.keepAlive(c)
+        ArsenalWatch.schedule(c) // the alarm doesn't survive a restart
+        ModeServer.start(c) // the phone page, before the home screen first shows
         HomeOverride.revive(c) { pending.finish() }
     }
 }

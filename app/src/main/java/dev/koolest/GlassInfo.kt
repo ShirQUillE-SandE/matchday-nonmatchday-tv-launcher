@@ -106,7 +106,7 @@ internal fun musicAccess(c: Context): Boolean {
         .split(':').any { ComponentName.unflattenFromString(it) == me }
 }
 
-internal class Track(val title: String, val artist: String, val art: Bitmap?, val progress: Float?)
+internal class Track(val title: String, val artist: String, val art: Bitmap?, val progress: Float?, val pkg: String = "")
 
 /** What's playing on the TV; null when nothing is, or Koolest hasn't been allowed to see it (see [musicAccess]). */
 internal fun nowPlaying(context: Context): Track? = try {
@@ -121,7 +121,7 @@ internal fun nowPlaying(context: Context): Track? = try {
             val at = state.position + ((android.os.SystemClock.elapsedRealtime() - state.lastPositionUpdateTime) * state.playbackSpeed).toLong()
             Track(title, m.getString(MediaMetadata.METADATA_KEY_ARTIST) ?: m.getString(MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE) ?: "",
                 m.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART) ?: m.getBitmap(MediaMetadata.METADATA_KEY_ART) ?: m.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON),
-                if (length > 0) (at.toFloat() / length).coerceIn(0f, 1f) else null)
+                if (length > 0) (at.toFloat() / length).coerceIn(0f, 1f) else null, s.packageName)
         }
 } catch (e: SecurityException) { // not allowed (no notification access)
     null

@@ -230,6 +230,17 @@
                 android:focusable="true"
                 android:padding="8dp"
                 android:src="@drawable/rail_tune" />
+
+            <!-- This build: switches between the weekday and match-day homes (see MatchDay.kt). -->
+            <ImageView
+                android:id="@+id/matchSwitch"
+                android:layout_width="34dp"
+                android:layout_height="34dp"
+                android:layout_marginStart="4dp"
+                android:contentDescription="Switch to match day"
+                android:focusable="true"
+                android:padding="8dp"
+                android:src="@drawable/ic_s_ball" />
         </LinearLayout>
 
         <!-- Billboard: eyebrow, title, meta line, plot (3 lines, 820 px wide), ending just above the rows. -->

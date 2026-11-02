@@ -241,7 +241,7 @@ class MainActivity : Activity() {
     private val appsTitle by lazy { findViewById<TextView>(R.id.appsTitle) }
     private val hero by lazy { findViewById<ImageView>(R.id.hero) }
     /** Everything behind All apps, which is opaque: not drawn while it's open. */
-    private val homeLayers by lazy { listOf(R.id.wallpaper, R.id.hero, R.id.stageScrim, R.id.content).map { findViewById<View>(it) } }
+    private val homeLayers by lazy { listOf(R.id.wallpaper, R.id.musicBg, R.id.hero, R.id.stageScrim, R.id.content).map { findViewById<View>(it) } }
     private val shelf by lazy { findViewById<View>(R.id.shelf) }
     private var shelfFor: View? = null
     private val railItems by lazy { findViewById<LinearLayout>(R.id.railItems) }
@@ -295,6 +295,10 @@ class MainActivity : Activity() {
         setContentView(R.layout.activity_main)
         allApps = findViewById(R.id.allApps)
         allAppsGrid = findViewById(R.id.allAppsGrid)
+        takeSetup(intent)
+        DreamOverlay.install(this)
+        addMusicLive()
+        addMatchHome()
         applyTheme()
         loadWallpaper()
         rows = findViewById(R.id.rows)
@@ -320,6 +324,7 @@ class MainActivity : Activity() {
             R.id.wifi to { openSettings(Settings.ACTION_WIFI_SETTINGS) },
             R.id.systemSettings to { openSettings(Settings.ACTION_SETTINGS) },
             R.id.launcherSettings to { unlock { openLauncherSettings() } },
+            R.id.matchSwitch to { switchMode() },
         )) findViewById<ImageView>(id).apply {
             setColorFilter(fg)
             val ring = GradientDrawable().apply { shape = GradientDrawable.OVAL }
@@ -369,6 +374,8 @@ class MainActivity : Activity() {
         super.onResume()
         Locale.setDefault(resources.configuration.locales[0]) // Android may have put the TV's back meanwhile (see localized)
         ensureHomeService()
+        DreamOverlay.keepScreensaverTimer(this)
+        ArsenalWatch.schedule(this)
         if (wantDark() != dark) {
             recreate()
             return
@@ -386,6 +393,8 @@ class MainActivity : Activity() {
         ui.post(wallpaperTick)
         ui.removeCallbacks(musicTick)
         ui.post(musicTick)
+        ui.removeCallbacks(matchTick)
+        ui.post(matchTick)
         if (railOpen) ui.post(snapTick) // the menu's glass, stopped while away
         // Gallery chosen but its paintings missing (updated from a version that bundled them): fetch them.
         if (galleryOn() && photoScreensaver() == null && !paintingsReady(this)) downloadPaintings {}
@@ -417,6 +426,9 @@ class MainActivity : Activity() {
         ui.removeCallbacks(wallpaperTick)
         ui.removeCallbacks(musicTick)
         ui.removeCallbacks(snapTick)
+        ui.removeCallbacks(matchTick)
+        matchHome.pause()
+        spectrum.stop() // stop listening to the sound while an app is in front; musicTick starts it again
         if (editing) endEdit()
         super.onPause()
     }
@@ -434,6 +446,8 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        if (ModeServer.changed != null && isFinishing) ModeServer.changed = null
+        ui.removeCallbacks(matchTick)
         unregisterReceiver(packageReceiver)
         applicationContext.getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(net)
         getSystemService(TvInputManager::class.java)?.unregisterCallback(inputCallback)
@@ -630,10 +644,56 @@ class MainActivity : Activity() {
         }
     }
 
+    // ---------- one-time setup over adb (this build) ----------
+    // am start -n dev.koolest/.MainActivity --es setup_stamp <unique> --es setup_theme dark
+    //   --es setup_keep "com.spotify.tv.android,org.smarttube.stable,com.netflix.ninja,PlayStation"
+    //   --es setup_rows_off "youtube,nama"
+    // setup_keep lists packages or console names (part of the name is enough), in order: they stay in the home rows
+    // and the menu, everything else is hidden (still in All apps). The stamp applies it once: Android can hand the
+    // home screen its old launch intent again, which must not undo changes made on the TV since.
+
+    private var setupRebuilds = false
+
+    private fun takeSetup(i: Intent?): Boolean {
+        val stamp = i?.getStringExtra("setup_stamp") ?: return false
+        if (stamp == prefs.getString("setup_stamp", null)) return false
+        val e = prefs.edit().putString("setup_stamp", stamp)
+        i.getStringExtra("setup_theme")?.takeIf { it in listOf("light", "dark", "auto") }?.let { e.putString("theme", it) }
+        i.getStringExtra("setup_keep")?.let { e.putString("setup_keep", it) }
+        i.getStringExtra("setup_rows_off")?.let { off -> e.putStringSet("rows_off", off.split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()) }
+        // The screensaver's start time, in ms, kept from then on (see DreamOverlay.keepScreensaverTimer); 0 stops keeping it.
+        i.getStringExtra("setup_screensaver_ms")?.toIntOrNull()?.let { e.putInt("keep_timeout", it) }
+        MatchDay.takeTestExtras(e, i.getStringExtra("matchday"), i.getStringExtra("matchday_at"))
+        i.getStringExtra("arsenal_test")?.let { ch -> // see ArsenalWatch
+            val channels = if (ch == "next") prefs.getString("ars_channels", "")!!.split('|').filter { it.isNotBlank() } else ch.split('|')
+            Thread { ArsenalWatch.open(applicationContext, channels, prefs.getString("ars_name", "Arsenal")!!) }.start()
+        }
+        e.commit() // read straight after, by applyTheme or the rebuilt screen
+        // Only the look and rows need the screen rebuilt; match-day and Arsenal tests apply in place.
+        setupRebuilds = listOf("setup_theme", "setup_keep", "setup_rows_off").any { i.hasExtra(it) }
+        return true
+    }
+
+    /** A pending setup_keep, once the apps have loaded: the order, the hidden apps and the menu pins from it. */
+    private fun applyPendingKeep() {
+        val keep = prefs.getString("setup_keep", null) ?: return
+        if (apps.isEmpty()) return
+        val kept = keep.split(',').map { it.trim() }.filter { it.isNotEmpty() }.mapNotNull { w ->
+            (apps.firstOrNull { it.pkg == w } ?: apps.firstOrNull { it.label.contains(w, ignoreCase = true) })?.pkg
+        }.distinct()
+        prefs.edit()
+            .putString("order", kept.joinToString(",")).putString("sort", "manual")
+            .putStringSet("row_hidden", apps.map { it.pkg }.filter { it !in kept }.toSet())
+            .putString("rail_apps", kept.joinToString(",")).putBoolean("rail_consoles", true)
+            .remove("setup_keep").apply()
+        railKey = null // rebuild the menu with the new pins
+    }
+
     /** Home pressed while already home: close whatever is open and go back to the start of the apps row. */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         if (intent.action == UPDATE_STATUS) return installStatus(intent)
+        if (takeSetup(intent)) return if (setupRebuilds) recreate() else applyMatchDay()
         if (editing) endEdit()
         if (settingsScrim.visibility == View.VISIBLE) closeLauncherSettings()
         if (allApps.visibility == View.VISIBLE) closeAllApps()
@@ -688,6 +748,8 @@ class MainActivity : Activity() {
         backdrop.panes.clear() // the panes are made again below, in this theme
         findViewById<View>(R.id.topBar).background = glass(dp(22), if (dark) 0x404A4D57 else 0x52FAFAFB, frosted = true)
         for (id in intArrayOf(R.id.infoDivider, R.id.iconDivider, R.id.npDivider)) findViewById<View>(id).setBackgroundColor(fg)
+        musicCard.setColors(fg, glass(dp(24), if (dark) 0x8C1C1E24.toInt() else 0x99F7F7F8.toInt(), frosted = true))
+        musicBg.setGround(ground)
         for (id in intArrayOf(R.id.clock, R.id.date, R.id.wxTemp, R.id.wxDesc, R.id.appsTitle, R.id.allAppsTitle,
             R.id.shelfTitle, R.id.shelfMeta, R.id.shelfPlot, R.id.npTitle, R.id.npArtist, R.id.faDate)) {
             findViewById<TextView>(id).setTextColor(fg)
@@ -813,6 +875,7 @@ class MainActivity : Activity() {
             ui.post {
                 val old = view.drawable
                 wallpaperBmp = bmp
+                matchHome.setWallpaper(bmp)
                 if (hero.alpha == 0f) updateBackdrop(bmp)
                 if (bmp == null) return@post view.setImageDrawable(ColorDrawable(ground))
                 if (old == null) return@post view.setImageBitmap(bmp)
@@ -1696,6 +1759,7 @@ class MainActivity : Activity() {
         // Or if nothing's been pressed yet: Android's default focus (a top button) isn't where the screen opens.
         val takeFocus = currentFocus == null || currentFocus?.parent === appRow || currentFocus?.parent === consoleRow ||
             !navigated && settingsScrim.visibility != View.VISIBLE && allApps.visibility != View.VISIBLE
+        applyPendingKeep()
         buildRail() // its pinned apps may have just loaded or changed
         val gap = dp(ITEM_GAP) // as cards: tiles are card-sized, so app rows line up with card rows
         val shown = sortedApps().filter { it.pkg !in rowHiddenSet() }
@@ -1711,7 +1775,9 @@ class MainActivity : Activity() {
             }
             rowOf(row)!!.visibility = if (list.isEmpty()) View.GONE else View.VISIBLE
         }
-        if (takeFocus) (kids(consoleRow).plus(kids(appRow)).firstOrNull { it.tag == focusedTag } ?: firstRowEntry())?.requestFocus()
+        renderDock(shown)
+        if (takeFocus && matchOn) matchHome.focusDock()
+        else if (takeFocus) (kids(consoleRow).plus(kids(appRow)).firstOrNull { it.tag == focusedTag } ?: firstRowEntry())?.requestFocus()
         if (!prefs.getBoolean("tip_move", false)) {
             prefs.edit().putBoolean("tip_move", true).apply()
             Toast.makeText(this, R.string.tip_move, Toast.LENGTH_LONG).show()
@@ -1983,7 +2049,7 @@ class MainActivity : Activity() {
             KeyEvent.KEYCODE_DPAD_DOWN -> lastRowItem?.takeIf { it.isAttachedToWindow } ?: firstRowEntry() ?: v
             KeyEvent.KEYCODE_DPAD_UP -> v
             KeyEvent.KEYCODE_DPAD_LEFT -> if (v.id == R.id.wifi) findViewById(R.id.railHome) else null
-            KeyEvent.KEYCODE_DPAD_RIGHT -> if (v.id == R.id.launcherSettings) v else null
+            KeyEvent.KEYCODE_DPAD_RIGHT -> if (v.id == R.id.matchSwitch) v else null
             else -> null
         }
         val row = rowOf(v) ?: return null
@@ -2368,8 +2434,9 @@ class MainActivity : Activity() {
         homeLayers.forEach { it.visibility = View.VISIBLE }
         if (hero.alpha == 1f && hero.drawable != null) findViewById<View>(R.id.wallpaper).visibility = View.INVISIBLE // under the art, see showArt
         homeFocusable(true)
+        if (matchOn) showMatchLayers(true) // the line above put the usual home's layers back
         renderApps()
-        findViewById<View>(R.id.allAppsButton).requestFocus() // back where it was opened from
+        (if (matchOn) matchHome.dock.findViewWithTag<View>(ALL_APPS_TILE) else findViewById(R.id.allAppsButton))?.requestFocus() // back where it was opened from
     }
 
     // ---------- screensaver ----------
@@ -2703,9 +2770,139 @@ class MainActivity : Activity() {
         }
     }
 
+    // ---------- match day (see MatchDay.kt) ----------
+    // On a day with a big-five-league or Champions League match, from the first kick-off until the last match ends, the home
+    // shows MatchHome instead of the rows; the rest of the time it's the usual home. Checked every 30 s while the
+    // home screen shows, from fixtures fetched a few times a day (every minute while matches are on).
+
+    private lateinit var matchHome: MatchHome
+    private var matchOn = false
+    /** The usual home's views that match day hid, to show again after. */
+    private var matchHidden = emptyList<View>()
+
+    private fun addMatchHome() {
+        matchHome = MatchHome(this, io, { unlock { openLauncherSettings() } }, ::switchMode).apply { visibility = View.GONE }
+        findViewById<FrameLayout>(R.id.content).addView(matchHome, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        // The phone page's buttons (see ModeServer) switch this screen straight away.
+        ModeServer.start(applicationContext)
+        ModeServer.changed = { ui.post { applyMatchDay() } }
+    }
+
+    /** The switch button (both homes): the other home now, until the next automatic change. */
+    private fun switchMode() {
+        MatchDay.setManual(prefs, if (matchOn) "weekday" else "matchday")
+        applyMatchDay()
+        Toast.makeText(this, (if (matchOn) "Match day" else "Weekday") + " until the next kick-off or final whistle", Toast.LENGTH_LONG).show()
+        (if (matchOn) matchHome.switch else findViewById(R.id.matchSwitch)).requestFocus()
+    }
+
+    private val matchTick = object : Runnable {
+        override fun run() {
+            applyMatchDay()
+            io.execute { if (MatchDay.refreshIfDue(prefs)) ui.post { applyMatchDay() } }
+            ui.postDelayed(this, 30_000L)
+        }
+    }
+
+    private fun applyMatchDay() {
+        if (isDestroyed) return // a fetch or the phone page finishing after the screen was rebuilt
+        val on = MatchDay.active(prefs)
+        if (on) matchHome.setGames(MatchDay.shown(prefs))
+        if (on == matchOn) return
+        matchOn = on
+        showMatchLayers(on)
+        showNowPlaying() // hands the music to the one now showing
+        showWeather() // match day has it even when the setting is off
+        refreshWeather()
+        if (allApps.visibility != View.VISIBLE && settingsScrim.visibility != View.VISIBLE) {
+            if (on) matchHome.focusDock() else firstRowEntry()?.requestFocus()
+        }
+    }
+
+    /** Match day on: its screen over a clear picture, the usual home's rows, bar, scrims and billboard hidden. */
+    private fun showMatchLayers(on: Boolean) {
+        val content = findViewById<FrameLayout>(R.id.content)
+        if (on) {
+            // Added to what's already hidden: All apps closing puts back only some of them (see closeAllApps).
+            val more = (kids(content) + listOf<View>(hero, findViewById(R.id.stageScrim))).filter { it !== matchHome && it.visibility == View.VISIBLE }
+            more.forEach { it.visibility = View.INVISIBLE }
+            matchHidden = (matchHidden + more).distinct()
+            matchHome.visibility = View.VISIBLE
+            matchHome.update()
+        } else {
+            matchHome.visibility = View.GONE
+            matchHidden.forEach { it.visibility = View.VISIBLE }
+            matchHidden = emptyList()
+        }
+    }
+
+    /** The dock: the home row's apps (and consoles) as full-artwork tiles, then All apps. */
+    private fun renderDock(shown: List<App>) {
+        val w = dp(144)
+        matchHome.setDock(shown.map { a -> appTile(a, w, labeled = false) } +
+            tile(null, getDrawable(R.drawable.rail_apps)!!, true, ALL_APPS_TILE, w) { openAllApps() }.apply {
+                contentDescription = getString(R.string.all_apps)
+            })
+    }
+
+    // ---------- music widget and live background ----------
+    // While music plays: a glass card at the top end (cover, title, artist, progress, spectrum bars), and behind
+    // everything a background of colour clouds from the cover that pulse with the bass. See MusicLive.kt.
+
+    private val spectrum = Spectrum()
+    private lateinit var musicCard: MusicCard
+    private lateinit var musicBg: MusicBackdrop
+
+    private fun musicLive() = prefs.getBoolean("music_live", true)
+
+    private fun addMusicLive() {
+        val root = findViewById<android.widget.FrameLayout>(R.id.root)
+        musicBg = MusicBackdrop(this, spectrum).apply { id = R.id.musicBg; alpha = 0f }
+        // Over the wallpaper, under the billboard art and the scrims (which keep the rows readable).
+        root.addView(musicBg, 1, android.widget.FrameLayout.LayoutParams(-1, -1))
+        musicCard = MusicCard(this, spectrum, resources.displayMetrics.density).apply { alpha = 0f }
+        // Top end, under the top bar and clear of the billboard; over the rows, which fade out up there anyway.
+        val content = findViewById<android.widget.FrameLayout>(R.id.content)
+        content.addView(musicCard, content.indexOfChild(findViewById(R.id.rowStack)) + 1,
+            android.widget.FrameLayout.LayoutParams(dp(380), -2, Gravity.TOP or Gravity.END).apply {
+                topMargin = dp(86)
+                marginEnd = dp(40)
+            })
+    }
+
+    // Shown or hidden by opacity only: All apps hides the home layers (musicBg among them) by visibility.
+    private var musicShown = false
+
+    private fun showMusicLive(t: Track?) {
+        if (t == null || !musicLive() || matchOn) { // match day has its own player and background
+            spectrum.stop()
+            musicCard.clear()
+            if (musicShown) {
+                if (allApps.visibility != View.VISIBLE) findViewById<View>(R.id.wallpaper).visibility = View.VISIBLE
+                for (v in listOf<View>(musicCard, musicBg)) v.animate().alpha(0f).setDuration(400).start()
+            }
+            musicShown = false
+            return
+        }
+        spectrum.start()
+        val name = try { packageManager.getApplicationLabel(packageManager.getApplicationInfo(t.pkg, 0)).toString() } catch (_: Exception) { null }
+        if (musicCard.show(t, name, R.drawable.ic_s_music, fg)) musicBg.setArt(t.art)
+        for (v in listOf<View>(musicCard, musicBg)) {
+            if (!musicShown) v.animate().alpha(1f).setDuration(600).withEndAction {
+                // The clouds are opaque: once they're in, the picture under them is one full-screen layer too many.
+                if (musicShown && v === musicBg) findViewById<View>(R.id.wallpaper).visibility = View.INVISIBLE
+            }.start()
+            v.invalidate() // restarts its frame loop if it had stopped
+        }
+        musicShown = true
+    }
+
     private fun showNowPlaying() {
         val view = findViewById<View>(R.id.nowPlaying)
-        val t = if (homeMusic()) nowPlaying(this) else null
+        val playing = nowPlaying(this)
+        showMusicLive(playing)
+        if (matchOn) matchHome.update()
+        val t = if (homeMusic()) playing else null
         if (t == null) {
             npShown = null
             if (view.visibility == View.VISIBLE) view.animate().alpha(0f).setDuration(200).withEndAction { view.visibility = View.GONE }.start()
@@ -2744,7 +2941,7 @@ class MainActivity : Activity() {
     }
 
     private fun refreshWeather() {
-        if (prefs.getString("weather", "off") == "off") return
+        if (weatherUnit() == "off") return
         if (System.currentTimeMillis() - prefs.getLong("wx_time", 0) < 25 * 60_000L && prefs.contains("wx_feel")) return
         io.execute {
             try {
@@ -2848,9 +3045,10 @@ class MainActivity : Activity() {
 
     private fun showWeather() {
         val view = findViewById<View>(R.id.weather)
-        val unit = prefs.getString("weather", "off")
+        val unit = weatherUnit()
         if (unit == "off" || !prefs.contains("wx_temp")) {
             view.visibility = View.GONE
+            matchHome.setWeather(null, null)
             return
         }
         fun deg(c: Float) = degrees(Math.round(if (unit == "f") c * 9 / 5 + 32 else c))
@@ -2863,7 +3061,12 @@ class MainActivity : Activity() {
             prefs.getString("geo_city", null),
         ).joinToString(getString(R.string.sep))
         view.visibility = View.VISIBLE
+        matchHome.setWeather(weatherIcon(code, prefs.getBoolean("wx_day", true)),
+            listOfNotNull(deg(prefs.getFloat("wx_temp", 0f)), prefs.getString("geo_city", null)).joinToString("  "))
     }
+
+    /** The Weather setting; match day shows the weather (in °C) even with it off. */
+    private fun weatherUnit() = prefs.getString("weather", "off")!!.let { if (it == "off" && matchOn) "c" else it }
 
     private fun getJson(url: String) = JSONObject(openStream(url).use { it.readBytes().decodeToString() })
 
@@ -3559,6 +3762,7 @@ class MainActivity : Activity() {
 
     /** Cards whose poster never arrived (offline, server timeout) try again; ones not yet near focus wait for it. */
     private fun retryPosters() {
+        if (isDestroyed) return // posted by the network callback just before the screen was rebuilt
         for (strip in cardRows.values) kids(strip).take(EAGER_POSTERS).forEach { card ->
             val img = posterOf(card) ?: return@forEach
             if (img.drawable == null || img.getTag(R.id.hero) == true) loadPoster(img, img.tag as? String)
@@ -3651,6 +3855,7 @@ class MainActivity : Activity() {
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     private companion object {
+        const val ALL_APPS_TILE = "all_apps_tile"
         const val TV_LISTINGS = "android.permission.READ_TV_LISTINGS"
         const val WRITE_SECURE = "android.permission.WRITE_SECURE_SETTINGS"
         const val ROLE_REQUEST = 2

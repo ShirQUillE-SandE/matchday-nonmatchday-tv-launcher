@@ -8,6 +8,7 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Brings the Home service back after a reboot (see HomeOverride.revive). -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" /> <!-- Arsenal games, Android 12+ -->
     <!-- Lets us read every app's Watch Next entries (same permission Projectivy uses). -->
     <uses-permission android:name="android.permission.READ_TV_LISTINGS" />
     <uses-permission android:name="com.android.providers.tv.permission.READ_EPG_DATA" />
@@ -26,7 +27,16 @@
         android:name="android.permission.WRITE_SETTINGS"
         tools:ignore="ProtectedPermissions" />
 
+    <!-- The home screen's music visualizer reads the TV's output mix (Visualizer session 0). Granted once over
+         adb: pm grant dev.koolest android.permission.RECORD_AUDIO. Without it the bars move on their own. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- The music card over the screensaver (DreamOverlay). Allowed once over adb:
+         appops set dev.koolest SYSTEM_ALERT_WINDOW allow. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
     <uses-feature android:name="android.software.leanback" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
     <queries>
@@ -87,6 +97,7 @@
             </intent-filter>
         </receiver>
 
+        <receiver android:name=".ArsenalAlarm" android:exported="false" />
         <receiver android:name=".Booted" android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

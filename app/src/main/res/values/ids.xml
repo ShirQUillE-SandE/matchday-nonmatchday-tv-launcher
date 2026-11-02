@@ -6,4 +6,5 @@
     <item name="railSearch" type="id" />
     <item name="railHome" type="id" />
     <item name="allAppsButton" type="id" />
+    <item name="musicBg" type="id" />
 </resources>
