@@ -28,3 +28,9 @@ This is a modified version of [Koolest TV Launcher](https://github.com/KoolestTV
 - `AndroidManifest.xml`: `RECORD_AUDIO`, `MODIFY_AUDIO_SETTINGS`, `SCHEDULE_EXACT_ALARM`, the `ArsenalAlarm` receiver.
 - `res/layout/activity_main.xml`: the switch button in the top bar.
 - `README.md`: rewritten for this fork; Koolest's README moved to `docs/KOOLEST-README.md`.
+
+## TV settings log
+
+- 2026-11-03: the screensaver never appeared after 3 minutes idle. TCL's app manager blocked Aerial Views from
+  starting (no auto-start permission). Fixed with `cmd appops set <pkg> APP_AUTO_START allow` for Aerial Views and
+  Koolest (now in [SETUP.md](SETUP.md), step 4). Undo: the same command with `ignore`.

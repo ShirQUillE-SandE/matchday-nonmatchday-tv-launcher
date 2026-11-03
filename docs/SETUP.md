@@ -66,6 +66,11 @@ adb shell cmd notification allow_listener dev.koolest/dev.koolest.MediaListener
 # The music card over the screensaver, and keeping the screensaver timer
 adb shell appops set dev.koolest SYSTEM_ALERT_WINDOW allow
 adb shell appops set dev.koolest WRITE_SETTINGS allow
+# TCL TVs: let the screensaver and Koolest start on their own. Without this TCL's app manager (TGuard) blocks
+# Aerial Views when it isn't already running: the TV goes idle but no screensaver shows
+# (logcat: "callee_does't_have_OP_AUTO_START_permission", "Unable to bind dream service").
+adb shell cmd appops set com.neilturner.aerialviews APP_AUTO_START allow
+adb shell cmd appops set dev.koolest APP_AUTO_START allow
 ```
 
 ## 5. One-time setup from the computer (optional)
